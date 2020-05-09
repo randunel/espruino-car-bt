@@ -4,51 +4,115 @@
 
 // rm output.txt; cat espruino.js | awk '{ print "send " $0; }' > commands.txt; minicom -b 9600 -D /dev/ttyACM0 -S commands.txt -C output.txt < escape.txt; cat output.txt
 
-const moduleIds = {
-    dabble: 0x00,
-    gamepad: 0x01,
-    terminal: 0x02,
-    pinmonitor: 0x03,
-    sensors: 0x04,
-    controls: 0x05,
-    camera: 0x06,
-    eviveinterfaces: 0x09,
-    ledcontrol: 0x0a,
-    colordetector: 0x0b,
-    datalogger: 0x0c,
-    notification: 0x0d,
-    music: 0x0e,
-    roboticarm: 0x0f,
-    homeautomation: 0x10,
-    internet: 0x11
+const modules = {
+    0x00: {
+        name: 'dabble',
+        bytes: 8,
+        functions: {
+            0x01: {
+                name: 'connection'
+            },
+            0x02: {
+                name: 'change input mode'
+            }
+        }
+    },
+    0x01: {
+        name: 'gamepad',
+        bytes: 8,
+        functions: {
+            0x01: {
+                name: 'digital'
+            },
+            0x02: {
+                name: 'analog'
+            },
+            0x03: {
+                name: 'accl'
+            }
+        }
+    },
+    0x04: {
+        name: 'sensors',
+        bytes: 10,
+        functions: {
+            0x01: {
+                name: 'accelerometer',
+                bytes: 20
+            },
+            0x02: {
+                name: 'gyroscope',
+                bytes: 20
+            },
+            0x03: {
+                name: 'magnetometer',
+                bytes: 20
+            },
+            0x04: {
+                name: 'proximity',
+                bytes: 10
+            },
+            0x05: {
+                name: 'light',
+                bytes: 10
+            },
+            0x06: {
+                name: 'sound'
+            },
+            0x07: {
+                name: 'temperature'
+            },
+            0x08: {
+                name: 'barometer'
+            },
+            0x09: {
+                name: 'gps',
+                bytes: 15
+            },
+            0x0a: {
+                name: 'speed'
+            }
+        }
+    },
+    0x05: {
+        name: 'motor controls',
+        bytes: 7,
+        functions: {
+            0x01: {
+                name: 'motor1',
+                bytes: 8
+            },
+            0x02: {
+                name: 'motor2',
+                bytes: 8
+            },
+            0x03: {
+                name: 'servo1',
+                bytes: 7
+            },
+            0x04: {
+                name: 'servo2',
+                bytes: 7
+            }
+        }
+    }
 };
 
-const dabbleFunctions = {
-    connection: 0x01,
-    disconnection: 0x02
-};
+// const gamepadBit1 = {
+//     start: 0,
+//     select: 1,
+//     triangle: 2 ,
+//     circle: 3,
+//     cross: 4,
+//     square: 5
+// };
 
-const gamepadFunctions = {
-    digital: 0x01,
-    analog: 0x02,
-    accl: 0x03
-};
-
-const gamepadBit1 = {
-    start: 0,
-    select: 1,
-    triangle: 2 ,
-    circle: 3,
-    cross: 4,
-    square: 5
-};
-
-const gamepadDigitalBit2 = {
-    up: 0,
-    down: 1,
-    left: 2,
-    right: 3
-};
+// const gamepadDigitalBit2 = {
+//     up: 0,
+//     down: 1,
+//     left: 2,
+//     right: 3
+// };
 
 //Byte 2 in case of Analog/Accelerometer Mode GamePad
 //XXXXXYYY = XXXXX(*15) is angle in radians, YYY is radius
@@ -64,39 +128,87 @@ function resetCommand() {
 
 resetCommand();
 
-function handleChar(char) {
-    if (char === 0xff) {
-        // start of command
-        command = {
-            startedAt: Date.now(),
-            bytes: [char]
-        };
-        return;
-    }
+function handleChar(charCode) {
+    if (charCode === 0xff) {
+        if (command.startedAt < Date.now() - 1000) {
+            // previous command older than 1s, this is a new command
+            command = {
+                startedAt: Date.now(),
+                bytes: [charCode]
+            };
+            return;
+        }
 
-    if (command.bytes.length >= 8) {
-        // data received is not part of a command
-        return;
+        const module = getModuleFunction(command.bytes);
+        if (command.bytes.length >= module.bytes) {
+            // previous command has finished
+            command = {
+                startedAt: Date.now(),
+                bytes: [charCode]
+            };
+            return;
+        }
     }
 
     if (command.startedAt < Date.now() - 1000) {
         // command older than 1s, abort
-        console.log('command too old, resetting.'); /*eslint-disable-line no-console*/
+        // console.log('command too old, resetting.'); /*eslint-disable-line no-console*/
         resetCommand();
         return;
     }
 
-    command.bytes.push(char);
+    command.bytes.push(charCode);
+    // console.log(command.bytes); /*eslint-disable-line no-console*/
 
-    if (command.bytes.length === 8) {
-        handleCommand(command);
+    if (
+        command.bytes.length >= 4 && // each command has at least 4 header bytes
+        charCode === 0x00 // the ending char is always 0x00
+    ) {
+        // unsure whether the transmission has ended or not, check the protocol
+        const module = getModuleFunction(command.bytes);
+        if (!module) {
+            // unknown module, best to end now
+            const cmd = command;
+            resetCommand();
+            handleUnknownCommand(cmd);
+            return;
+        }
+        if (command.bytes.length >= module.bytes) {
+            // this command has a known set of arguments
+            const cmd = command;
+            resetCommand();
+            handleCommand(cmd, module);
+            return;
+        }
+        // transmission not over, wait for more bytes
     }
+    // transmission not over, wait for more bytes
 }
 
-function handleCommand(command) {
-    resetCommand();
+function getModuleFunction(bytes) {
+    const module = modules[bytes[1]];
+    if (!module) {
+        return null;
+    }
+    const result = {
+        name: module.name,
+        bytes: module.bytes
+    };
+    const moduleFunction = module.functions[bytes[2]];
+    if (!moduleFunction) {
+        return result;
+    }
+    result.bytes = moduleFunction.bytes || result.bytes;
+    result.function = moduleFunction;
+    return result;
+}
 
-    console.log('command received', command);
+function handleUnknownCommand() {
+    console.log('unknown cmd received'); /*eslint-disable-line no-console*/
+}
+
+function handleCommand(cmd, module) {
+    console.log(module, cmd); /*eslint-disable-line no-console*/
 }
 
 Serial1.setup(9600, {
@@ -106,7 +218,7 @@ Serial1.setup(9600, {
 
 Serial1.on('data', function(data) {
     for (let ci = 0; ci < data.length; ci += 1) {
-        handleChar(data.charAt(ci));
+        handleChar(data.charCodeAt(ci));
     }
 });
 

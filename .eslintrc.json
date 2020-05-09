@@ -31,7 +31,6 @@
         "max-nested-callbacks": ["error", 4],
         "no-caller": "error",
         "no-case-declarations": "off",
-        "no-console": "off",
         "no-const-assign": "error",
         "no-else-return": "error",
         "no-empty-pattern": "error",
