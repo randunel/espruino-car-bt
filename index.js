@@ -1,6 +1,6 @@
 'use strict';
 
-/* global Serial1 A10 A9 A8 C9 C8 C7 C6 LED1 LED2 LED3 digitalPulse digitalWrite analogWrite E */
+/* global Serial1 A10 A9 A8 C9 C8 C7 C6 LED1 LED3 digitalPulse digitalWrite analogWrite E */
 
 // rm output.txt; cat espruino.js | awk '{ print "send " $0; }' > commands.txt; minicom -b 9600 -D /dev/ttyACM0 -S commands.txt -C output.txt < escape.txt; cat output.txt
 
@@ -290,42 +290,134 @@ Serial1.print('AT+VERS?');
  * BEGIN motors section
  */
 
-function spinWheel(wheel, speed) {
-    speed = speed || 0;
-    if (speed > 100) {
-        speed = 100;
+function createMotorController() {
+    const minSpeed = 25, maxSpeed = 100, motors = [{
+        ia: C6,
+        ib: C7,
+        orientation: 1
+    }, {
+        ia: C8,
+        ib: C9,
+        orientation: -1
+    }];
+    let currentSpeed = 0, currentDirection = 0, interval;
+
+    function stop() {
+        currentSpeed = 0;
+        currentDirection = 0;
+        if (interval) {
+            clearInterval(interval);
+        }
+        motors.forEach(function(motor) {
+            analogWrite(motor.ia, 0);
+            analogWrite(motor.ib, 0);
+        });
     }
-    let ia, ib;
-    switch (wheel) {
-        case 'left':
-            ia = C6;
-            ib = C7;
-            break;
-        case 'right':
-            ia = C8;
-            ib = C9;
-            break;
-        default:
-            console.log('unknown wheel'); /*eslint-disable-line no-console*/
-            return;
+
+    function setSpeed(speed, direction) {
+        motors.forEach(function(motor) {
+            if (motor.orientation * direction === -1) {
+                analogWrite(motor.ia, speed / 100);
+                analogWrite(motor.ib, 0);
+                return;
+            }
+            analogWrite(motor.ib, speed / 100);
+            analogWrite(motor.ia, 0);
+        });
     }
-    analogWrite(ia, speed / 100);
-    analogWrite(ib, 0);
+
+    function accelerate() {
+        if (interval) {
+            clearInterval(interval);
+        }
+        interval = setInterval(function() {
+            let nextSpeed = Math.max(currentSpeed + 1, minSpeed);
+            if (nextSpeed > maxSpeed) {
+                clearInterval(interval);
+                interval = undefined;
+                nextSpeed = maxSpeed;
+            }
+            setSpeed(nextSpeed, currentDirection);
+            currentSpeed = nextSpeed;
+        }, 66);
+    }
+
+    return {
+        accelerateOrStop: function() {
+            if (currentDirection === -1) {
+                stop();
+                return;
+            }
+            currentDirection = 1;
+            accelerate();
+        },
+        reverseOrStop: function() {
+            if (currentDirection === 1) {
+                stop();
+                return;
+            }
+            currentDirection = -1;
+            accelerate();
+        },
+        releaseReverse: function() {
+            if (currentDirection !== -1) {
+                return;
+            }
+            if (interval) {
+                clearInterval(interval);
+            }
+            interval = setInterval(function() {
+                let nextSpeed = currentSpeed - 1;
+                if (nextSpeed < minSpeed) {
+                    clearInterval(interval);
+                    interval = undefined;
+                    nextSpeed = 0;
+                    currentDirection = 0;
+                }
+                setSpeed(nextSpeed, currentDirection);
+                currentSpeed = nextSpeed;
+            }, 150);
+        },
+        releaseAcceleration: function() {
+            if (currentDirection !== 1) {
+                return;
+            }
+            if (interval) {
+                clearInterval(interval);
+            }
+            interval = setInterval(function() {
+                let nextSpeed = currentSpeed - 1;
+                if (nextSpeed < minSpeed) {
+                    clearInterval(interval);
+                    interval = undefined;
+                    nextSpeed = 0;
+                    currentDirection = 0;
+                }
+                setSpeed(nextSpeed, currentDirection);
+                currentSpeed = nextSpeed;
+            }, 200);
+        },
+        stop: stop
+    };
 }
 
-spinWheel('right', 100);
-setTimeout(function() {
-    spinWheel('right', 33);
-}, 1000);
-setTimeout(function() {
-    spinWheel('right', 25);
-}, 2000);
-setTimeout(function() {
-    spinWheel('right', 70);
-}, 3000);
-setTimeout(function() {
-    spinWheel('right', 0);
-}, 4000);
+const motor = createMotorController();
+
+function startAccelerating() {
+    motor.accelerateOrStop();
+}
+
+function stopAccelerating() {
+    motor.releaseAcceleration();
+}
+
+function startReversing() {
+    motor.reverseOrStop();
+}
+
+function stopReversing() {
+    motor.releaseReverse();
+}
 
 /**
  * END motors section
@@ -432,19 +524,21 @@ E.on('gamepad-start-off', function() {
 });
 
 E.on('gamepad-cross-on', function() {
+    startReversing();
     digitalWrite(LED1, 1);
 });
 
 E.on('gamepad-cross-off', function() {
+    stopReversing();
     digitalWrite(LED1, 0);
 });
 
 E.on('gamepad-triangle-on', function() {
-    digitalWrite(LED2, 1);
+    startAccelerating();
 });
 
 E.on('gamepad-triangle-off', function() {
-    digitalWrite(LED2, 0);
+    stopAccelerating();
 });
 
 E.on('gamepad-left-on', function() {
