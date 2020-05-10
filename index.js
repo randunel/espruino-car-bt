@@ -45,13 +45,6 @@ const gamepadDigitalHandlers = [{
 }];
 
 function gamepadHandler(bytes) {
-    // const gamepadDigitalBit2 = {
-    //     up: 0,
-    //     down: 1,
-    //     left: 2,
-    //     right: 3
-    // };
-
     //Byte 2 in case of Analog/Accelerometer Mode GamePad
     //XXXXXYYY = XXXXX(*15) is angle in radians, YYY is radius
     console.log('gamepadHandler', bytes); /* eslint-disable-line no-console */
@@ -63,12 +56,13 @@ function gamepadHandler(bytes) {
     });
 
     const cmd2 = bytes[6];
-    if (bytes[2] & 0x01) { // digital mode
+    if (bytes[2] === 0x01) { // digital mode
         gamepadDigitalHandlers.forEach(function(handler) {
             const position = cmd2 & handler.bit ? 'on' : 'off';
             E.emit(`${handler.event}-${position}`);
         });
     } else {
+        E.emit('gamepad-analog', bytes[6]);
     }
 }
 
@@ -477,6 +471,11 @@ function createServoController(pin, options) {
 const servo = createServoController(A8, { range: 2, currentPos: 0.5 });
 servo.move(0.5, 1000);
 
+function setServoPosition(angle) {
+    // Angle between 180 and 360 degrees
+    servo.move((angle - 180) / 180, 300);
+}
+
 function startServoLeft() {
     servo.move(0, 2000);
     function abandon() {
@@ -547,6 +546,16 @@ E.on('gamepad-left-on', function() {
 
 E.on('gamepad-right-on', function() {
     startServoRight();
+});
+
+E.on('gamepad-analog', function(byte) {
+    let angle = (byte >> 3) * 15;
+    if (angle < 90) {
+        angle = 360;
+    } else if (angle < 180) {
+        angle = 180;
+    }
+    setServoPosition(angle);
 });
 
 /**
