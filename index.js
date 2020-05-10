@@ -1,8 +1,76 @@
 'use strict';
 
-/* global Serial1 A10 A9 A8 C9 C8 C7 C6 digitalPulse analogWrite E */
+/* global Serial1 A10 A9 A8 C9 C8 C7 C6 LED1 LED2 LED3 digitalPulse digitalWrite analogWrite E */
 
 // rm output.txt; cat espruino.js | awk '{ print "send " $0; }' > commands.txt; minicom -b 9600 -D /dev/ttyACM0 -S commands.txt -C output.txt < escape.txt; cat output.txt
+
+/**
+ * BEGIN gamepad + bluetooth section
+ */
+
+function noop() {}
+
+const gamepadArg1Handlers = [{
+    bit: 0x01, // start
+    event: 'gamepad-start'
+}, {
+    bit: 0x02, // select
+    event: 'gamepad-select'
+}, {
+    bit: 0x04, // triangle
+    event: 'gamepad-triangle'
+}, {
+    bit: 0x08, // circle
+    event: 'gamepad-circle'
+}, {
+    bit: 0x10, // cross
+    event: 'gamepad-cross'
+}, {
+    bit: 0x20, // square
+    event: 'gamepad-square'
+}];
+
+const gamepadDigitalHandlers = [{
+    bit: 0x01, // up
+    event: 'gamepad-up'
+}, {
+    bit: 0x02, // down
+    event: 'gamepad-down'
+}, {
+    bit: 0x04, // left
+    event: 'gamepad-left'
+}, {
+    bit: 0x08, // right
+    event: 'gamepad-right'
+}];
+
+function gamepadHandler(bytes) {
+    // const gamepadDigitalBit2 = {
+    //     up: 0,
+    //     down: 1,
+    //     left: 2,
+    //     right: 3
+    // };
+
+    //Byte 2 in case of Analog/Accelerometer Mode GamePad
+    //XXXXXYYY = XXXXX(*15) is angle in radians, YYY is radius
+    console.log('gamepadHandler', bytes); /* eslint-disable-line no-console */
+
+    const cmd1 = bytes[5];
+    gamepadArg1Handlers.forEach(function(handler) {
+        const position = cmd1 & handler.bit ? 'on' : 'off';
+        E.emit(`${handler.event}-${position}`);
+    });
+
+    const cmd2 = bytes[6];
+    if (bytes[2] & 0x01) { // digital mode
+        gamepadDigitalHandlers.forEach(function(handler) {
+            const position = cmd2 & handler.bit ? 'on' : 'off';
+            E.emit(`${handler.event}-${position}`);
+        });
+    } else {
+    }
+}
 
 const modules = {
     0x00: {
@@ -13,7 +81,8 @@ const modules = {
                 name: 'connection'
             },
             0x02: {
-                name: 'change input mode'
+                name: 'change input mode',
+                handler: noop
             }
         }
     },
@@ -22,13 +91,16 @@ const modules = {
         bytes: 8,
         functions: {
             0x01: {
-                name: 'digital'
+                name: 'digital',
+                handler: gamepadHandler
             },
             0x02: {
-                name: 'analog'
+                name: 'analog',
+                handler: gamepadHandler
             },
             0x03: {
-                name: 'accl'
+                name: 'accl',
+                handler: gamepadHandler
             }
         }
     },
@@ -97,25 +169,6 @@ const modules = {
         }
     }
 };
-
-// const gamepadBit1 = {
-//     start: 0,
-//     select: 1,
-//     triangle: 2 ,
-//     circle: 3,
-//     cross: 4,
-//     square: 5
-// };
-
-// const gamepadDigitalBit2 = {
-//     up: 0,
-//     down: 1,
-//     left: 2,
-//     right: 3
-// };
-
-//Byte 2 in case of Analog/Accelerometer Mode GamePad
-//XXXXXYYY = XXXXX(*15) is angle in radians, YYY is radius
 
 let command;
 
@@ -208,7 +261,12 @@ function handleUnknownCommand() {
 }
 
 function handleCommand(cmd, module) {
-    console.log(module, cmd); /*eslint-disable-line no-console*/
+    if (!module.function.handler) {
+        /*eslint-disable-next-line no-console*/
+        console.log('missing function handler for', module, cmd);
+        return;
+    }
+    module.function.handler(cmd.bytes);
 }
 
 Serial1.setup(9600, {
@@ -224,49 +282,13 @@ Serial1.on('data', function(data) {
 
 Serial1.print('AT+VERS?');
 
-// -----
-// -----
-// -----
-// -----
-// -----
+/**
+ * END gamepad + bluetooth section
+ */
 
-function createServoController(pin, options) {
-    let interval, currentPos = options.currentPos || undefined;
-    let offs = 1, mul = 1;
-    if (options && options.range) {
-        mul = options.range;
-        offs = 1.5 - (mul / 2);
-    }
-
-    return {
-        move: function(pos, time, callback) {
-            if (time === undefined) {
-                time = 1000;
-            }
-            let amt = 0;
-            if (currentPos === undefined) {
-                currentPos = pos;
-            }
-            if (interval) {
-                clearInterval(interval);
-            }
-            const initial = currentPos;
-            interval = setInterval(function() {
-                if (amt > 1) {
-                    clearInterval(interval);
-                    interval = undefined;
-                    amt = 1;
-                    if (callback) {
-                        callback();
-                    }
-                }
-                currentPos = pos * amt + initial * (1 - amt);
-                digitalPulse(pin, 1, offs + E.clip(currentPos, 0, 1) * mul);
-                amt += 1000.0 / (20 * time);
-            }, 20);
-        }
-    };
-}
+/**
+ * BEGIN motors section
+ */
 
 function spinWheel(wheel, speed) {
     speed = speed || 0;
@@ -305,13 +327,134 @@ setTimeout(function() {
     spinWheel('right', 0);
 }, 4000);
 
+/**
+ * END motors section
+ */
+
+/**
+ * BEGIN servo section
+ */
+
+function createServoController(pin, options) {
+    let interval, currentPos = options.currentPos || undefined;
+    let offs = 1, mul = 1;
+    if (options && options.range) {
+        mul = options.range;
+        offs = 1.5 - (mul / 2);
+    }
+
+    return {
+        move: function(pos, time, callback) {
+            if (time === undefined) {
+                time = 1000;
+            }
+            let amt = 0;
+            if (currentPos === undefined) {
+                currentPos = pos;
+            }
+            if (interval) {
+                clearInterval(interval);
+            }
+            const initial = currentPos;
+            interval = setInterval(function() {
+                if (amt > 1) {
+                    clearInterval(interval);
+                    interval = undefined;
+                    amt = 1;
+                    if (callback) {
+                        callback();
+                    }
+                }
+                currentPos = pos * amt + initial * (1 - amt);
+                digitalPulse(pin, 1, offs + E.clip(currentPos, 0, 1) * mul);
+                amt += 1000.0 / (20 * time);
+            }, 20);
+        },
+        stop: function(callback) {
+            if (interval) {
+                clearInterval(interval);
+                // TOD0: call other callbacks
+            }
+            if (callback) {
+                callback();
+            }
+        }
+    };
+}
+
 const servo = createServoController(A8, { range: 2, currentPos: 0.5 });
 servo.move(0.5, 1000);
-servo.move(0, 4000, function() {
-    servo.move(1, 3000, function() {
-        servo.move(0, 2000, function() {
-            servo.move(0.5, 0, function() {
-            });
-        });
-    });
+
+function startServoLeft() {
+    servo.move(0, 2000);
+    function abandon() {
+        E.removeListener('gamepad-right-on', abandon);
+        E.removeListener('gamepad-left-off', stop);
+    }
+    function stop() {
+        E.removeListener('gamepad-right-on', abandon);
+        E.removeListener('gamepad-left-off', stop);
+        servo.stop();
+    }
+    E.on('gamepad-right-on', abandon);
+    E.on('gamepad-left-off', stop);
+}
+
+function startServoRight() {
+    servo.move(1, 2000);
+    function abandon() {
+        E.removeListener('gamepad-left-on', abandon);
+        E.removeListener('gamepad-right-off', stop);
+    }
+    function stop() {
+        E.removeListener('gamepad-left-on', abandon);
+        E.removeListener('gamepad-right-off', stop);
+        servo.stop();
+    }
+    E.on('gamepad-left-on', abandon);
+    E.on('gamepad-right-off', stop);
+}
+
+/**
+ * END servo section
+ */
+
+/**
+ * BEGIN event listeners section
+ */
+
+E.on('gamepad-start-on', function() {
+    digitalWrite(LED3, 1);
 });
+
+E.on('gamepad-start-off', function() {
+    digitalWrite(LED3, 0);
+});
+
+E.on('gamepad-cross-on', function() {
+    digitalWrite(LED1, 1);
+});
+
+E.on('gamepad-cross-off', function() {
+    digitalWrite(LED1, 0);
+});
+
+E.on('gamepad-triangle-on', function() {
+    digitalWrite(LED2, 1);
+});
+
+E.on('gamepad-triangle-off', function() {
+    digitalWrite(LED2, 0);
+});
+
+E.on('gamepad-left-on', function() {
+    startServoLeft();
+});
+
+E.on('gamepad-right-on', function() {
+    startServoRight();
+});
+
+/**
+ * END event listeners section
+ */
